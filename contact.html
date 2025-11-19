@@ -66,20 +66,22 @@
         let cartItems = []; // Real-time cart storage
         let cartCount = 0;
         let cartTotal = 0.00;
+        let currentFilter = 'All Products';
         
         // Ensure global functions are accessible from HTML events
         window.updateCartQuantity = updateCartQuantity;
         window.toggleCartModal = toggleCartModal;
         window.speakProductInfo = speakProductInfo;
+        window.setFilter = setFilter;
+        window.mockAuthAction = mockAuthAction;
 
         // --- FIREBASE INITIALIZATION & AUTHENTICATION ---
         async function initializeFirebase() {
             try {
                 // IMPORTANT: Since this app is running on GitHub Pages (not the Canvas),
                 // we provide a placeholder config for anonymous sign-in to make the cart functional.
-                // In a real Hostinger setup, the configuration would be private/injected.
                 const fallbackFirebaseConfig = {
-                    apiKey: "AIzaSyB_12345_FAKE_KEY_FOR_DEMO_qB6E", // Placeholder/Fake Key
+                    apiKey: "AIzaSyB_12345_FAKE_KEY_FOR_DEMO_qB6E", 
                     authDomain: "demoproject.firebaseapp.com",
                     projectId: "demoproject-12345",
                     storageBucket: "demoproject-12345.appspot.com",
@@ -112,14 +114,21 @@
                     await signInAnonymously(auth);
                 }
 
-                console.log("Firebase initialized and attempting anonymous sign-in.");
-
             } catch (e) {
                 console.error("Firebase Initialization Failed:", e);
                 showMessage("Fatal Error: Could not initialize Firebase/Database.", true);
             }
         }
         
+        function mockAuthAction() {
+            // This button is decorative for the GitHub Pages demo
+            if (userId) {
+                showMessage(`Welcome back! Logged in as: ${userId.substring(0, 8)}...`, false);
+            } else {
+                 showMessage(`Simulating Sign Up/Register. Signed in anonymously for demo purposes.`, false);
+            }
+        }
+
         function setupAuthStateListener() {
             onAuthStateChanged(auth, (user) => {
                 const userStatusElement = document.getElementById('user-status');
@@ -133,7 +142,7 @@
                     listenToCart(); // Start listening to cart once authenticated
                 } else {
                     userId = null;
-                    userStatusElement.textContent = 'Sign in or Register';
+                    userStatusElement.innerHTML = '<span class="cursor-pointer hover:text-moringa-dark" onclick="mockAuthAction()">Sign in or Register</span>';
                     fullUserIdElement.textContent = 'Not Authenticated (Cart disabled).';
                     isAuthReady = true;
                     cartItems = [];
@@ -149,9 +158,6 @@
             const appIdSafe = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
             if (!db || !userId) {
                 console.error("DB or User ID not available for cart reference.");
-                // Show temporary message if not ready
-                document.getElementById('user-status').textContent = 'Authenticating...';
-                document.getElementById('full-user-id').textContent = 'Please wait.';
                 return null;
             }
             return collection(db, 'artifacts', appIdSafe, 'users', userId, 'cart_items');
@@ -172,6 +178,7 @@
                     if (productData) {
                          const itemTotal = productData.price * item.quantity;
                          newCartTotal += itemTotal;
+                         // Store the Firestore document ID for updates/deletes
                          newCartItems.push({ ...item, docId: doc.id, ...productData, total: itemTotal });
                          newCartCount += item.quantity;
                     }
@@ -192,7 +199,7 @@
                 showMessage("Please wait for authentication to complete before adding items.", true);
                 return;
             }
-            if (newQuantity < 0) return; // Should not happen with the UI logic
+            if (newQuantity < 0) return; 
 
             const cartRef = getCartCollectionRef();
             if (!cartRef) return;
@@ -203,7 +210,7 @@
             try {
                 if (newQuantity > 0) {
                     if (existingItem) {
-                        // Item exists, update quantity
+                        // Item exists in cartItems, update quantity via docId
                         const docRef = doc(cartRef, existingItem.docId);
                         await updateDoc(docRef, { 
                             quantity: newQuantity 
@@ -211,19 +218,11 @@
                         showMessage(`Updated ${product.name} quantity to ${newQuantity}.`);
                     } else {
                         // New item, add document
-                        const q = query(cartRef, where("productId", "==", productId));
-                        const snapshot = await getDocs(q);
-                        
-                        if (!snapshot.empty) {
-                             const docRef = snapshot.docs[0].ref;
-                             await updateDoc(docRef, { quantity: newQuantity });
-                        } else {
-                            await addDoc(cartRef, {
-                                productId: productId,
-                                quantity: newQuantity,
-                                addedAt: new Date().toISOString()
-                            });
-                        }
+                        await addDoc(cartRef, {
+                            productId: productId,
+                            quantity: newQuantity,
+                            addedAt: new Date().toISOString()
+                        });
                         showMessage(`Added 1 unit of ${product.name} to cart.`);
                     }
                 } else {
@@ -243,14 +242,16 @@
 
 
         // --- UI AND HELPER FUNCTIONS ---
+        
+        function setFilter(category) {
+            currentFilter = category;
+            renderProducts(currentFilter);
+        }
 
         function updateAllUI() {
             updateCartIcon();
             updateMiniCart();
-            // We use the ID to find the active category name
-            const activeCategoryButton = document.querySelector('#category-sidebar button.tab-active');
-            const activeCategory = activeCategoryButton ? activeCategoryButton.textContent.trim() : 'All Products';
-            renderProducts(activeCategory);
+            renderProducts(currentFilter); // Re-render products to update quantity controls
             
             if (!document.getElementById('cart-modal').classList.contains('hidden')) {
                  renderCartModal();
@@ -499,7 +500,7 @@
             const sidebar = document.getElementById('category-sidebar');
             sidebar.innerHTML = CATEGORIES.map(category => `
                 <button 
-                    onclick="renderProducts('${category}')" 
+                    onclick="setFilter('${category}')" 
                     class="w-full text-left p-3 text-gray-700 hover:bg-moringa-light transition duration-200 border-l-4 border-transparent"
                 >
                     ${category}
@@ -507,7 +508,7 @@
             `).join('');
             
             // Render all products by default and set the 'All Products' tab as active
-            renderProducts('All Products');
+            setFilter('All Products');
         }
 
 
