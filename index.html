@@ -50,6 +50,10 @@
             height: calc(100vh - 120px);
             /* Adjust overflow if the cart gets too big */
         }
+        /* Disable button appearance while loading */
+        .btn-loading {
+            @apply bg-gray-400 cursor-not-allowed;
+        }
     </style>
     <script type="module">
         // --- FIREBASE IMPORTS ---
@@ -196,7 +200,7 @@
 
         async function updateCartQuantity(productId, newQuantity) {
             if (!isAuthReady || !userId) {
-                showMessage("Please wait for authentication to complete before adding items.", true);
+                showMessage("Authentication in progress. Please wait a moment.", true);
                 return;
             }
             if (newQuantity < 0) return; 
@@ -246,6 +250,14 @@
         function setFilter(category) {
             currentFilter = category;
             renderProducts(currentFilter);
+            
+            // Highlight the current category
+            document.querySelectorAll('#category-sidebar button').forEach(button => {
+                button.classList.remove('tab-active');
+                if (button.textContent.trim() === category) {
+                    button.classList.add('tab-active');
+                }
+            });
         }
 
         function updateAllUI() {
@@ -412,6 +424,15 @@
         }
 
         function renderQuantityControl(productId) {
+            // Check if authentication is ready
+            if (!isAuthReady) {
+                return `
+                    <button disabled class="w-full py-2 rounded-lg font-semibold shadow-md btn-loading">
+                        Connecting...
+                    </button>
+                `;
+            }
+
             // Find the item in the cartItems array
             const item = cartItems.find(i => i.productId === productId);
             const quantity = item ? item.quantity : 0;
@@ -446,14 +467,6 @@
             const container = document.getElementById('product-grid');
             container.innerHTML = '';
             
-            // Highlight the current category
-            document.querySelectorAll('#category-sidebar button').forEach(button => {
-                button.classList.remove('tab-active');
-                if (button.textContent.trim() === filterCategory) {
-                    button.classList.add('tab-active');
-                }
-            });
-
             const filteredProducts = filterCategory === 'All Products'
                 ? PRODUCTS
                 : PRODUCTS.filter(p => p.category === filterCategory);
