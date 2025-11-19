@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nature's Cart - Your Online Superfood Store</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for a cleaner font and smooth transitions */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7fbf8; /* Very light green/off-white */
+        }
+        /* Deep green theme for a reliable grocery feel */
+        .moringa-gradient {
+            background-image: linear-gradient(to right, #2E7D32, #4CAF50); 
+        }
+        .moringa-shadow {
+            box-shadow: 0 8px 25px -10px rgba(46, 125, 50, 0.5);
+        }
+        .product-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: 1px solid #E0E0E0; 
+            background-color: white;
+        }
+        .product-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px -5px rgba(46, 125, 50, 0.2);
+            border-color: #4CAF50;
+        }
+        .tab-active {
+            @apply bg-moringa-light text-moringa-dark font-bold border-l-4 border-moringa-dark;
+        }
+        .modal {
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+        /* Fixed sidebar and mini-cart placement */
+        #category-sidebar-wrapper {
+            position: sticky;
+            top: 100px; /* Below the header */
+            height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+        #mini-cart-wrapper {
+            position: sticky;
+            top: 100px; /* Below the header */
+            height: calc(100vh - 120px);
+            /* Adjust overflow if the cart gets too big */
+        }
+    </style>
+    <script type="module">
+        // --- FIREBASE IMPORTS ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // --- GLOBAL STATE & FIREBASE VARIABLES ---
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+        let cartItems = []; // Real-time cart storage
+        let cartCount = 0;
+        let cartTotal = 0.00;
+        let currentFilter = 'All Products';
+        
+        // Ensure global functions are accessible from HTML events
+        window.updateCartQuantity = updateCartQuantity;
+        window.toggleCartModal = toggleCartModal;
+        window.speakProductInfo = speakProductInfo;
+        window.setFilter = setFilter;
+        window.mockAuthAction = mockAuthAction;
+
+        // --- FIREBASE INITIALIZATION & AUTHENTICATION ---
+        async function initializeFirebase() {
+            try {
+                // IMPORTANT: Since this app is running on GitHub Pages (not the Canvas),
+                // we provide a placeholder config for anonymous sign-in to make the cart functional.
+                const fallbackFirebaseConfig = {
+                    apiKey: "AIzaSyB_12345_FAKE_KEY_FOR_DEMO_qB6E", 
+                    authDomain: "demoproject.firebaseapp.com",
+                    projectId: "demoproject-12345",
+                    storageBucket: "demoproject-12345.appspot.com",
+                    messagingSenderId: "123456789012",
+                    appId: "1:123456789012:web:a1b2c3d4e5f6g7h8i9j0"
+                };
+
+                // Use environment variables if available (for Canvas) or fallback config (for GitHub Pages)
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : JSON.stringify(fallbackFirebaseConfig));
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                const appIdSafe = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                
+                if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.projectId) {
+                    console.error("Firebase configuration is missing or invalid.");
+                    showMessage("Error: Firebase configuration missing. Cart cannot be saved.", true);
+                    return;
+                }
+
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // Set up the listener before signing in to catch the state change
+                setupAuthStateListener();
+
+                // Sign in using custom token (if in Canvas) or anonymously (for demo/fallback)
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+            } catch (e) {
+                console.error("Firebase Initialization Failed:", e);
+                showMessage("Fatal Error: Could not initialize Firebase/Database.", true);
+            }
+        }
+        
+        function mockAuthAction() {
+            // This button is decorative for the GitHub Pages demo
+            if (userId) {
+                showMessage(`Welcome back! Logged in as: ${userId.substring(0, 8)}...`, false);
+            } else {
+                 showMessage(`Simulating Sign Up/Register. Signed in anonymously for demo purposes.`, false);
+            }
+        }
+
+        function setupAuthStateListener() {
+            onAuthStateChanged(auth, (user) => {
+                const userStatusElement = document.getElementById('user-status');
+                const fullUserIdElement = document.getElementById('full-user-id');
+                
+                if (user) {
+                    userId = user.uid;
+                    userStatusElement.textContent = `Hello, User (${user.uid.substring(0, 8)}...)`;
+                    fullUserIdElement.textContent = `User ID: ${user.uid}`;
+                    isAuthReady = true;
+                    listenToCart(); // Start listening to cart once authenticated
+                } else {
+                    userId = null;
+                    userStatusElement.innerHTML = '<span class="cursor-pointer hover:text-moringa-dark" onclick="mockAuthAction()">Sign in or Register</span>';
+                    fullUserIdElement.textContent = 'Not Authenticated (Cart disabled).';
+                    isAuthReady = true;
+                    cartItems = [];
+                    updateAllUI();
+                }
+            });
+        }
+        
+        // --- FIRESTORE CART LOGIC ---
+
+        function getCartCollectionRef() {
+            // Firestore path: /artifacts/{appId}/users/{userId}/cart_items
+            const appIdSafe = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            if (!db || !userId) {
+                console.error("DB or User ID not available for cart reference.");
+                return null;
+            }
+            return collection(db, 'artifacts', appIdSafe, 'users', userId, 'cart_items');
+        }
+
+        function listenToCart() {
+            const cartRef = getCartCollectionRef();
+            if (!cartRef) return;
+            
+            onSnapshot(cartRef, (snapshot) => {
+                const newCartItems = [];
+                let newCartCount = 0;
+                let newCartTotal = 0.00;
+                
+                snapshot.forEach(doc => {
+                    const item = doc.data();
+                    const productData = PRODUCTS.find(p => p.id === item.productId);
+                    if (productData) {
+                         const itemTotal = productData.price * item.quantity;
+                         newCartTotal += itemTotal;
+                         // Store the Firestore document ID for updates/deletes
+                         newCartItems.push({ ...item, docId: doc.id, ...productData, total: itemTotal });
+                         newCartCount += item.quantity;
+                    }
+                });
+                
+                cartItems = newCartItems;
+                cartCount = newCartCount;
+                cartTotal = newCartTotal;
+                updateAllUI(); // Update all related UI elements
+            }, (error) => {
+                console.error("Error listening to cart:", error);
+                showMessage("Error fetching cart data in real-time.", true);
+            });
+        }
+
+        async function updateCartQuantity(productId, newQuantity) {
+            if (!isAuthReady || !userId) {
+                showMessage("Please wait for authentication to complete before adding items.", true);
+                return;
+            }
+            if (newQuantity < 0) return; 
+
+            const cartRef = getCartCollectionRef();
+            if (!cartRef) return;
+            
+            const existingItem = cartItems.find(item => item.productId === productId);
+            const product = PRODUCTS.find(p => p.id === productId);
+
+            try {
+                if (newQuantity > 0) {
+                    if (existingItem) {
+                        // Item exists in cartItems, update quantity via docId
+                        const docRef = doc(cartRef, existingItem.docId);
+                        await updateDoc(docRef, { 
+                            quantity: newQuantity 
+                        });
+                        showMessage(`Updated ${product.name} quantity to ${newQuantity}.`);
+                    } else {
+                        // New item, add document
+                        await addDoc(cartRef, {
+                            productId: productId,
+                            quantity: newQuantity,
+                            addedAt: new Date().toISOString()
+                        });
+                        showMessage(`Added 1 unit of ${product.name} to cart.`);
+                    }
+                } else {
+                    // Quantity is 0, remove the item
+                    if (existingItem) {
+                        const docRef = doc(cartRef, existingItem.docId);
+                        await deleteDoc(docRef);
+                        showMessage(`${product.name} removed from cart.`, false);
+                    }
+                }
+
+            } catch (e) {
+                console.error("Error updating cart:", e);
+                showMessage("Could not update item in cart. Try again.", true);
+            }
+        }
+
+
+        // --- UI AND HELPER FUNCTIONS ---
+        
+        function setFilter(category) {
+            currentFilter = category;
+            renderProducts(currentFilter);
+        }
+
+        function updateAllUI() {
+            updateCartIcon();
+            updateMiniCart();
+            renderProducts(currentFilter); // Re-render products to update quantity controls
+            
+            if (!document.getElementById('cart-modal').classList.contains('hidden')) {
+                 renderCartModal();
+            }
+        }
+
+        function updateCartIcon() {
+            document.getElementById('cart-count').textContent = cartCount;
+        }
+
+        function updateMiniCart() {
+             const miniCartDiv = document.getElementById('mini-cart-summary');
+             
+             if (cartItems.length === 0) {
+                 miniCartDiv.innerHTML = `
+                    <div class="p-6 text-center text-gray-500">
+                        <svg class="w-10 h-10 text-gray-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l3.29 7.7 1.25 3.5M9 14h13l-1.6 4.7H8M17 5l-1.25 3.5"></path></svg>
+                        <p class="text-sm">Your basket is empty. Add items to start shopping!</p>
+                    </div>
+                 `;
+             } else {
+                 let listHtml = '';
+                 cartItems.slice(0, 3).forEach(item => { // Show max 3 items in summary
+                     listHtml += `
+                         <div class="flex justify-between items-center py-2 border-b last:border-b-0">
+                             <span class="text-sm text-gray-700">${item.quantity} x ${item.name.replace(/\s\(.*\)/, '')}</span>
+                             <span class="text-sm font-semibold">₹${item.total.toFixed(2)}</span>
+                         </div>
+                     `;
+                 });
+                 
+                 const remainingItems = cartItems.length - 3;
+                 if (remainingItems > 0) {
+                     listHtml += `<p class="text-xs text-gray-500 pt-2 text-center">+ ${remainingItems} more items</p>`;
+                 }
+                 
+                 miniCartDiv.innerHTML = `
+                    <div class="p-4 bg-white rounded-xl shadow-lg">
+                         <h4 class="font-bold text-lg text-moringa-dark mb-3 border-b pb-2">Your Basket Summary</h4>
+                         ${listHtml}
+                         
+                         <div class="flex justify-between items-center mt-4 pt-3 border-t border-dashed border-gray-300">
+                             <span class="font-bold text-xl text-gray-800">TOTAL:</span>
+                             <span class="font-extrabold text-2xl text-accent-red">₹${cartTotal.toFixed(2)}</span>
+                         </div>
+                         <button onclick="toggleCartModal()" class="w-full moringa-gradient text-white py-3 mt-4 rounded-lg font-semibold shadow-md hover:opacity-90 transition duration-300">
+                             View Full Cart (${cartCount} items)
+                         </button>
+                    </div>
+                 `;
+             }
+        }
+
+        function showMessage(message, isError = false) {
+            const msgBox = document.getElementById('message-box');
+            const msgText = document.getElementById('message-text');
+            
+            msgText.textContent = message;
+            
+            msgBox.classList.remove('bg-red-500', 'bg-moringa-dark', 'opacity-0', 'pointer-events-none');
+            
+            if (isError) {
+                msgBox.classList.add('bg-red-500');
+            } else {
+                msgBox.classList.add('bg-moringa-dark');
+            }
+            
+            msgBox.classList.remove('hidden');
+            msgBox.classList.add('flex', 'opacity-100');
+
+            setTimeout(() => {
+                msgBox.classList.remove('opacity-100');
+                msgBox.classList.add('opacity-0');
+                setTimeout(() => {
+                    msgBox.classList.add('hidden');
+                }, 500); // Wait for transition to finish
+            }, 3000);
+        }
+
+        function toggleCartModal() {
+            const modal = document.getElementById('cart-modal');
+            modal.classList.toggle('hidden');
+            if (!modal.classList.contains('hidden')) {
+                renderCartModal();
+            }
+        }
+
+        function renderCartModal() {
+            const cartList = document.getElementById('cart-list');
+            const cartTotalElement = document.getElementById('modal-cart-total');
+            
+            if (!cartList || !isAuthReady) return; 
+
+            cartList.innerHTML = ''; 
+
+            if (cartItems.length === 0) {
+                cartList.innerHTML = '<p class="text-center text-gray-500 py-8">Your cart is empty. Time to stock up on powders!</p>';
+            } else {
+                cartItems.forEach(item => {
+                    const itemHtml = `
+                        <div class="flex items-center justify-between py-3 border-b border-gray-100 last:border-b-0">
+                            <div class="flex-1 min-w-0 pr-4">
+                                <p class="font-semibold text-moringa-dark">${item.name.replace(/\s\(.*\)/, '')}</p>
+                                <p class="text-sm text-gray-500">@ ₹${item.price.toFixed(2)}/kg</p>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <!-- Quantity Controls - Uses docId from Firestore for persistence -->
+                                <button onclick="updateCartQuantity(${item.id}, ${item.quantity - 1})" 
+                                        class="w-7 h-7 flex items-center justify-center bg-gray-200 rounded text-gray-700 hover:bg-red-500 hover:text-white transition">
+                                    -
+                                </button>
+                                <span class="font-bold w-4 text-center">${item.quantity}</span>
+                                <button onclick="updateCartQuantity(${item.id}, ${item.quantity + 1})" 
+                                        class="w-7 h-7 flex items-center justify-center bg-moringa-primary text-white rounded hover:bg-moringa-dark transition">
+                                    +
+                                </button>
+                            </div>
+                            <span class="font-bold text-lg w-20 text-right text-moringa-dark">₹${item.total.toFixed(2)}</span>
+                        </div>
+                    `;
+                    cartList.innerHTML += itemHtml;
+                });
+            }
+
+            cartTotalElement.textContent = `₹${cartTotal.toFixed(2)}`;
+        }
+
+
+        // --- PRODUCT DATA ARRAY (Prices in INR ₹, 1kg packs) ---
+        const PRODUCTS = [
+            { id: 1, name: "G9 Banana Powder (1kg)", category: "Fruit Powders", description: "Sweet G9 variety, perfect for energy shakes and baking.", price: 450.00, icon: '🍌' },
+            { id: 2, name: "Raw Banana Powder (1kg)", category: "Fruit Powders", description: "Rich in resistant starch, ideal for infants and digestive health.", price: 200.00, icon: '🍌' },
+            { id: 3, name: "Jackfruit Powder (1kg)", category: "Fruit Powders", description: "Low GI alternative, excellent for diabetic-friendly recipes.", price: 500.00, icon: '🍈' },
+            { id: 4, name: "Mango Powder (Amchur, 1kg)", category: "Fruit Powders", description: "Dried, tangy raw mango powder for flavoring curries and snacks.", price: 550.00, icon: '🥭' },
+            { id: 5, name: "Amla Powder (1kg)", category: "Fruit Powders", description: "Indian Gooseberry powder, rich in Vitamin C, immune booster.", price: 500.00, icon: '🍋' },
+            { id: 6, name: "Beetroot Powder (1kg)", category: "Vegetable Powders", description: "Natural color and nitrate source, great for pre-workout drinks.", price: 300.00, icon: '🥔' },
+            { id: 7, name: "Carrot Powder (1kg)", category: "Vegetable Powders", description: "High in beta-carotene, great for soups and health drinks.", price: 300.00, icon: '🥕' },
+            { id: 8, name: "Tomato Powder (1kg)", category: "Vegetable Powders", description: "Concentrated flavor for sauces, instant soups, and seasoning.", price: 300.00, icon: '🍅' },
+            { id: 9, name: "Onion Powder (1kg)", category: "Vegetable Powders", description: "A kitchen essential, strong, pungent flavor for marinades and dry mixes.", price: 200.00, icon: '🧅' },
+            { id: 10, name: "Moringa Powder (1kg)", category: "Leaf & Herbal Powders", description: "Our flagship superfood, complete nutrition, 92 nutrients.", price: 350.00, icon: '🌿' },
+            { id: 11, name: "Spinach Powder (1kg)", category: "Leaf & Herbal Powders", description: "Natural iron source and green food coloring.", price: 350.00, icon: '🥬' },
+            { id: 12, name: "Curry Leaf Powder (1kg)", category: "Leaf & Herbal Powders", description: "Aromatic, used for hair growth and South Indian cuisine.", price: 250.00, icon: '🍛' },
+            { id: 13, name: "Mint Powder (1kg)", category: "Leaf & Herbal Powders", description: "Pudina powder for cooling drinks, chutneys, and savory dishes.", price: 300.00, icon: '🍃' },
+            { id: 14, name: "Coriander Powder (1kg)", category: "Spice & Root Powders", description: "Dhaniya powder, essential spice for all Indian gravies and curries.", price: 300.00, icon: '🌶️' },
+            { id: 15, name: "Ginger Powder (1kg)", category: "Spice & Root Powders", description: "Sun-dried Ginger powder (Soonth) for tea, digestion, and baking.", price: 300.00, icon: '🫚' },
+            { id: 16, name: "Green Chilli Powder (1kg)", category: "Spice & Root Powders", description: "Highly potent, dried Green Chilli powder for instant heat.", price: 300.00, icon: '🌶️' },
+        ];
+
+        // Unique categories for filtering
+        const CATEGORIES = ["All Products", "Fruit Powders", "Vegetable Powders", "Leaf & Herbal Powders", "Spice & Root Powders"];
+
+        // --- DYNAMIC RENDERING LOGIC ---
+
+        function getProductIcon(icon) {
+            return `<div class="w-16 h-16 mx-auto mb-3 flex items-center justify-center bg-moringa-light rounded-lg">
+                        <span class="text-3xl">${icon}</span>
+                    </div>`;
+        }
+
+        function renderQuantityControl(productId) {
+            // Find the item in the cartItems array
+            const item = cartItems.find(i => i.productId === productId);
+            const quantity = item ? item.quantity : 0;
+            
+            if (quantity > 0) {
+                // Show quantity selector
+                return `
+                    <div class="flex items-center justify-center space-x-1 w-full">
+                        <button onclick="updateCartQuantity(${productId}, ${quantity - 1})" 
+                                class="w-8 h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-l font-bold text-lg hover:bg-red-200 transition">
+                            -
+                        </button>
+                        <span class="w-10 text-center font-bold text-moringa-dark">${quantity}</span>
+                        <button onclick="updateCartQuantity(${productId}, ${quantity + 1})" 
+                                class="w-8 h-8 flex items-center justify-center bg-moringa-primary text-white rounded-r font-bold text-lg hover:bg-moringa-dark transition">
+                            +
+                        </button>
+                    </div>
+                `;
+            } else {
+                // Show Add button
+                return `
+                    <button onclick="updateCartQuantity(${productId}, 1)" 
+                            class="w-full moringa-gradient text-white py-2 rounded-lg font-semibold shadow-md hover:opacity-90 transition duration-300">
+                        Add to Cart
+                    </button>
+                `;
+            }
+        }
+
+        function renderProducts(filterCategory) {
+            const container = document.getElementById('product-grid');
+            container.innerHTML = '';
+            
+            // Highlight the current category
+            document.querySelectorAll('#category-sidebar button').forEach(button => {
+                button.classList.remove('tab-active');
+                if (button.textContent.trim() === filterCategory) {
+                    button.classList.add('tab-active');
+                }
+            });
+
+            const filteredProducts = filterCategory === 'All Products'
+                ? PRODUCTS
+                : PRODUCTS.filter(p => p.category === filterCategory);
+
+            if (filteredProducts.length === 0) {
+                container.innerHTML = '<p class="text-center col-span-full text-gray-500 text-xl py-10">No products found in this category.</p>';
+                return;
+            }
+
+            filteredProducts.forEach(product => {
+                const priceString = `₹${product.price.toFixed(2)}`;
+                const ttsPrompt = `${product.name} is priced at ${product.price.toFixed(0)} Rupees per kilogram. ${product.description}`;
+                
+                const card = `
+                <div class="product-card rounded-xl shadow-sm hover:shadow-lg flex flex-col justify-between p-3">
+                    <div>
+                        <div class="flex justify-center mb-3">
+                            ${getProductIcon(product.icon)}
+                        </div>
+                        <h3 class="text-md font-bold text-gray-900 leading-tight mb-1 h-10 overflow-hidden">${product.name}</h3>
+                        <p class="text-xs text-gray-500 mb-2 h-8 overflow-hidden">${product.description}</p>
+                    </div>
+
+                    <div class="flex flex-col">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-xl font-extrabold text-accent-red">${priceString}</span>
+                            <button onclick="speakProductInfo('${ttsPrompt}')" 
+                                    class="text-gray-400 hover:text-moringa-dark transition duration-300 p-1 rounded-full hover:bg-gray-100">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a.5.5 0 00-.707 0L12 11.293 9.172 8.464a.5.5 0 10-.707.707l3.5 3.5a.5.5 0 00.707 0l3.5-3.5a.5.5 0 000-.707zM12 20a8 8 0 100-16 8 8 0 000 16z"></path></svg>
+                            </button>
+                        </div>
+                        
+                        <div class="mt-2">
+                            ${renderQuantityControl(product.id)}
+                        </div>
+                    </div>
+                </div>
+                `;
+                container.innerHTML += card;
+            });
+        }
+
+        function renderCategorySidebar() {
+            const sidebar = document.getElementById('category-sidebar');
+            sidebar.innerHTML = CATEGORIES.map(category => `
+                <button 
+                    onclick="setFilter('${category}')" 
+                    class="w-full text-left p-3 text-gray-700 hover:bg-moringa-light transition duration-200 border-l-4 border-transparent"
+                >
+                    ${category}
+                </button>
+            `).join('');
+            
+            // Render all products by default and set the 'All Products' tab as active
+            setFilter('All Products');
+        }
+
+
+        // --- TTS Helper Functions ---
+        const base64ToArrayBuffer = (base64) => {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        };
+
+        const writeString = (view, offset, string) => {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        };
+
+        const pcmToWav = (pcm16, sampleRate) => {
+            const numChannels = 1;
+            const bytesPerSample = 2; // 16-bit PCM
+            const dataLength = pcm16.length * bytesPerSample;
+            const buffer = new ArrayBuffer(44 + dataLength);
+            const view = new DataView(buffer);
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + dataLength, true); 
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true); 
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numChannels * bytesPerSample, true); 
+            view.setUint16(32, numChannels * bytesPerSample, true); 
+            view.setUint16(34, 16, true); 
+            writeString(view, 36, 'data');
+            view.setUint32(40, dataLength, true); 
+
+            let offset = 44;
+            for (let i = 0; i < pcm16.length; i++) {
+                view.setInt16(offset, pcm16[i], true);
+                offset += 2;
+            }
+
+            return new Blob([view], { type: 'audio/wav' });
+        };
+
+        async function speakProductInfo(prompt) {
+            const apiKey = "";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+            const loadingIndicator = document.getElementById('audio-loading');
+            
+            loadingIndicator.classList.remove('hidden');
+
+            const payload = {
+                contents: [{
+                    parts: [{ text: `Say in a warm, professional voice: ${prompt}` }]
+                }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: "Charon" }
+                        }
+                    }
+                },
+                model: "gemini-2.5-flash-preview-tts"
+            };
+
+            const maxRetries = 3;
+            let currentDelay = 1000;
+            
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`API error: ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    const part = result?.candidates?.[0]?.content?.parts?.[0];
+                    const audioData = part?.inlineData?.data;
+                    const mimeType = part?.inlineData?.mimeType;
+
+                    if (audioData && mimeType && mimeType.startsWith("audio/")) {
+                        const rateMatch = mimeType.match(/rate=(\d+)/);
+                        const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+                        
+                        const pcmData = base64ToArrayBuffer(audioData);
+                        const pcm16 = new Int16Array(pcmData);
+                        const wavBlob = pcmToWav(pcm16, sampleRate);
+                        const audioUrl = URL.createObjectURL(wavBlob);
+                        
+                        const audio = new Audio(audioUrl);
+                        audio.play();
+
+                        audio.onended = () => {
+                            loadingIndicator.classList.add('hidden');
+                            URL.revokeObjectURL(audioUrl);
+                        };
+
+                        return;
+                    } else {
+                        throw new Error("Invalid audio data received from API.");
+                    }
+                } catch (error) {
+                    console.error("Attempt failed:", error.message);
+                    if (i < maxRetries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, currentDelay));
+                        currentDelay *= 2;
+                    } else {
+                        showMessage("Error generating audio. Please try again later.", true);
+                    }
+                } finally {
+                    loadingIndicator.classList.add('hidden');
+                }
+            }
+        }
+        // --- END TTS Helper Functions ---
+
+
+        // --- INITIALIZATION ---
+        window.onload = function() {
+            initializeFirebase(); // Start Firebase and Auth process
+            renderCategorySidebar(); // Render the categories
+        };
+
+    </script>
+</head>
+<body class="min-h-screen">
+
+    <!-- Sticky Message Box -->
+    <div id="message-box" class="fixed top-5 right-5 z-50 p-4 rounded-lg text-white moringa-shadow transition-opacity duration-500 opacity-0 hidden">
+        <span id="message-text" class="font-semibold"></span>
+    </div>
+
+    <!-- Cart Modal (Hidden by Default) -->
+    <div id="cart-modal" class="modal fixed inset-0 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+            <!-- Modal Header -->
+            <div class="flex justify-between items-center p-5 border-b border-gray-200">
+                <h3 class="text-2xl font-bold text-moringa-dark">Your Shopping Cart</h3>
+                <button onclick="toggleCartModal()" class="text-gray-400 hover:text-red-500 transition">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <!-- Cart Items List (Scrollable) -->
+            <div id="cart-list" class="flex-grow overflow-y-auto p-5 space-y-2">
+                <!-- Cart items are rendered here by JavaScript's renderCartModal() -->
+            </div>
+
+            <!-- Modal Footer (Total and Checkout) -->
+            <div class="p-5 border-t border-gray-200">
+                <div class="flex justify-between items-center text-xl font-bold mb-4">
+                    <span>Total:</span>
+                    <span id="modal-cart-total" class="text-moringa-dark">₹0.00</span>
+                </div>
+                <button class="w-full moringa-gradient text-white py-3 rounded-lg font-semibold text-lg shadow-md hover:opacity-90 transition duration-300"
+                        onclick="showMessage('This is a demo checkout! Total: ' + document.getElementById('modal-cart-total').textContent)">
+                    Proceed to Checkout
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Header & Navigation (BigBasket Style Top Bar) -->
+    <header class="bg-white shadow-md sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+            <!-- Logo/Brand Name -->
+            <a href="#" class="text-3xl font-bold text-moringa-dark flex items-center">
+                <svg class="w-8 h-8 mr-2 text-moringa-primary" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15H9v-2h2v2zm0-4H9V7h2v6zm4 0h-2V7h2v6zm-2 4h-2v2h2v-2z"/>
+                </svg>
+                <span class="hidden sm:inline">Nature's Cart</span>
+                <span class="sm:hidden">N.Cart</span>
+            </a>
+            
+            <!-- Search Bar (Placeholder) -->
+            <div class="flex-1 max-w-xl mx-8 hidden lg:block">
+                <input type="text" placeholder="Search for Coriander, Amla, or Beetroot powder..." class="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-moringa-primary focus:border-moringa-primary transition">
+            </div>
+
+            <!-- Account & Cart Status -->
+            <div class="flex items-center space-x-4">
+                 <!-- User Status/Login Area -->
+                <div class="hidden sm:block text-right text-sm">
+                    <!-- This will now show the User ID after sign-in -->
+                    <p id="user-status" class="font-semibold text-gray-800">Authenticating...</p> 
+                    <p id="full-user-id" class="text-xs text-gray-500 whitespace-nowrap overflow-hidden"></p>
+                </div>
+
+                <!-- Cart Icon Button (Opens modal on mobile) -->
+                <button onclick="toggleCartModal()" class="relative p-2 rounded-full hover:bg-moringa-light transition">
+                    <svg class="w-8 h-8 text-moringa-dark cursor-pointer" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l3.29 7.7 1.25 3.5M9 14h13l-1.6 4.7H8M17 5l-1.25 3.5"></path>
+                    </svg>
+                    <span id="cart-count" class="absolute top-0 right-0 bg-red-500 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">0</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Content Area (Sidebar, Products, Mini-Cart) -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        <h1 class="text-3xl font-bold text-moringa-dark mb-6">Online Supermarket</h1>
+
+        <!-- Main Grid Layout (BigBasket Style: Sidebar, Products, Mini-Cart) -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+            <!-- 1. Left Sidebar (Categories) - Fixed on Desktop -->
+            <div class="lg:col-span-2 hidden lg:block" id="category-sidebar-wrapper">
+                <div class="bg-white rounded-xl shadow-lg border border-gray-100">
+                    <h3 class="text-xl font-bold text-gray-800 p-4 border-b">Categories</h3>
+                    <div id="category-sidebar" class="flex flex-col">
+                        <!-- Categories rendered by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. Central Product Grid -->
+            <div class="lg:col-span-7">
+                <!-- Mobile Category Selector (Dropdown/Tabs for small screens) -->
+                <div class="lg:hidden mb-6">
+                    <h2 class="text-xl font-semibold text-gray-700 mb-2">Select Category</h2>
+                    <div id="category-tabs" class="flex flex-wrap justify-start space-x-2 sm:space-x-4 mb-4 bg-white p-2 rounded-xl shadow-inner overflow-x-auto">
+                        <!-- Categories are only rendered in the sidebar for desktop view -->
+                    </div>
+                </div>
+
+                <!-- Loading Indicator for TTS -->
+                <div id="audio-loading" class="hidden text-center mb-8 p-3 bg-yellow-200 text-moringa-dark font-semibold rounded-lg">
+                    <svg class="animate-spin -ml-1 mr-3 h-5 w-5 inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Generating audio description...
+                </div>
+
+                <!-- Product Grid Container: Now 3 columns in the center pane -->
+                <div id="product-grid" class="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-6">
+                    <!-- Dynamic product cards will appear here -->
+                </div>
+            </div>
+
+            <!-- 3. Right Mini-Cart Summary - Fixed on Desktop -->
+            <div class="lg:col-span-3 hidden lg:block" id="mini-cart-wrapper">
+                <div id="mini-cart-summary">
+                    <!-- Mini-cart summary is rendered here by JS's updateMiniCart() -->
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-moringa-dark text-white py-12 mt-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <h4 class="text-2xl font-bold mb-4">Nature's Cart</h4>
+            <p class="text-gray-300 text-sm">&copy; 2024 Nature's Cart. All rights reserved.</p>
+        </div>
+    </footer>
+</body>
+</html>
